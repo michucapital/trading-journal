@@ -1,64 +1,108 @@
-import Image from "next/image";
+'use client';
+import { useEffect, useState, useCallback } from 'react';
+import { RefreshCw, BookOpen } from 'lucide-react';
+import { DayCard } from '@/components/journal/DayCard';
+import type { JournalData } from '@/types/journal';
 
-export default function Home() {
+export default function JournalPage() {
+  const [data, setData]     = useState<JournalData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]   = useState<string | null>(null);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/trades');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json() as JournalData;
+      setData(json);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const totalPnl = data?.days.reduce(
+    (s, d) => s + d.trades.reduce((ts, t) => ts + (t.pnl ?? 0), 0), 0
+  ) ?? 0;
+
+  const totalTrades = data?.days.reduce((s, d) => s + d.trades.length, 0) ?? 0;
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <div className="min-h-screen bg-background">
+      {/* Top bar */}
+      <header className="sticky top-0 z-10 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <BookOpen size={20} className="text-primary" />
+            <span className="font-semibold text-base">Trading Journal</span>
+          </div>
+          <div className="flex items-center gap-4">
+            {data && (
+              <div className="hidden sm:flex items-center gap-4 text-sm text-muted-foreground">
+                <span>{data.days.length} sessions · {totalTrades} trades</span>
+                <span className={`font-mono font-semibold tabular-nums ${
+                  totalPnl > 0 ? 'text-emerald-600 dark:text-emerald-400'
+                  : totalPnl < 0 ? 'text-red-500 dark:text-red-400'
+                  : ''
+                }`}>
+                  All-time: {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}
+                </span>
+              </div>
+            )}
+            <button
+              onClick={loadData}
+              disabled={loading}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm border border-border hover:bg-muted transition-colors disabled:opacity-50"
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+              <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+              Refresh
+            </button>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+      </header>
+
+      {/* Main content */}
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 py-6">
+        {loading && !data && (
+          <div className="flex flex-col gap-3">
+            {[...Array(3)].map((_, i) => (
+              <div key={i} className="h-16 rounded-xl bg-muted animate-pulse" />
+            ))}
+          </div>
+        )}
+
+        {error && (
+          <div className="rounded-xl border border-destructive/40 bg-destructive/5 px-5 py-4 text-sm text-destructive">
+            Failed to load journal data: {error}
+          </div>
+        )}
+
+        {data && data.days.length === 0 && !loading && (
+          <div className="flex flex-col items-center justify-center py-24 text-center">
+            <BookOpen size={40} className="text-muted-foreground/40 mb-4" />
+            <h2 className="text-lg font-medium mb-1">No trades yet</h2>
+            <p className="text-sm text-muted-foreground max-w-xs">
+              Trades will appear here automatically once NT8 sends executions via the JournalExporter.
+            </p>
+          </div>
+        )}
+
+        {data && data.days.length > 0 && (
+          <div className="flex flex-col gap-4">
+            {data.days.map(day => (
+              <DayCard
+                key={day.date}
+                day={day}
+                onDataChange={loadData}
+              />
+            ))}
+          </div>
+        )}
       </main>
     </div>
   );
