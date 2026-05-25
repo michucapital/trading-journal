@@ -1,7 +1,5 @@
 #region Using declarations
 using System;
-using System.ComponentModel;
-using System.ComponentModel.DataAnnotations;
 using System.Globalization;
 using System.Linq;
 using System.Net.Http;
@@ -19,37 +17,23 @@ namespace NinjaTrader.NinjaScript.AddOns
         private static JournalExporter _instance;
         private Account targetAccount;
 
-        // Static HttpClient — AllowAutoRedirect = false prevents POST→GET downgrade on redirects
+        // HttpClient — no auto-redirect (prevents POST→GET downgrade)
         private static readonly HttpClient httpClient = new HttpClient(
             new HttpClientHandler { AllowAutoRedirect = false }
         );
 
-        // Deduplication: skip duplicate ExecutionUpdate events for the same fill
+        // =====================================================================
+        //  CONFIGURATION — edit these three values before compiling
+        // =====================================================================
+        private readonly string apiUrl      = "https://trading-journal-zeta-dun.vercel.app/api/trade";
+        private readonly string apiSecret   = "PASSWORD";       // <-- paste your API_SECRET_TOKEN here
+        private readonly string accountName = "DEMO4560079";
+        // =====================================================================
+
+        // Deduplication: skip if NT8 fires the same executionId twice
         private string lastExecutionId = string.Empty;
 
-        // ---------------------------------------------------------------
-        // CONFIGURABLE SETTINGS — set these in NT8 Tools > Options > AddOns
-        // They are stored locally by NT8 and never committed to GitHub.
-        // ---------------------------------------------------------------
-        [NinjaScriptProperty]
-        [Display(Name = "API URL", Description = "Your Vercel deployment URL, e.g. https://trading-journal-zeta-dun.vercel.app/api/trade", Order = 1, GroupName = "Journal Settings")]
-        public string ApiUrl { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "API Secret", Description = "Must match API_SECRET_TOKEN in your Vercel environment variables", Order = 2, GroupName = "Journal Settings")]
-        public string ApiSecret { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Account Name", Description = "Exact NT8 account name to monitor, e.g. DEMO4560079", Order = 3, GroupName = "Journal Settings")]
-        public string AccountName { get; set; }
-
-        public JournalExporter()
-        {
-            // Safe defaults — no secrets, no localhost assumption
-            ApiUrl      = "https://your-vercel-url.vercel.app/api/trade";
-            ApiSecret   = "";
-            AccountName = "";
-        }
+        public JournalExporter() { }
 
         public static JournalExporter Instance
         {
@@ -66,18 +50,9 @@ namespace NinjaTrader.NinjaScript.AddOns
 
         private void Initialize()
         {
-            if (string.IsNullOrWhiteSpace(AccountName) || string.IsNullOrWhiteSpace(ApiSecret))
-            {
-                NinjaTrader.Code.Output.Process(
-                    "JournalExporter: Not configured. Go to Tools > Options > AddOns and set Account Name, API URL, and API Secret.",
-                    PrintTo.OutputTab1
-                );
-                return;
-            }
-
             lock (Account.All)
             {
-                targetAccount = Account.All.FirstOrDefault(a => a.Name == AccountName);
+                targetAccount = Account.All.FirstOrDefault(a => a.Name == accountName);
             }
 
             if (targetAccount != null)
@@ -88,7 +63,7 @@ namespace NinjaTrader.NinjaScript.AddOns
             else
             {
                 NinjaTrader.Code.Output.Process(
-                    "JournalExporter: Account '" + AccountName + "' not found. " +
+                    "JournalExporter: Account '" + accountName + "' not found. " +
                     "Ensure NT8 is connected to your data feed before the AddOn loads.",
                     PrintTo.OutputTab1
                 );
@@ -106,7 +81,7 @@ namespace NinjaTrader.NinjaScript.AddOns
             lastExecutionId = executionId;
 
             string orderId       = e.Execution.OrderId;
-            string instrument    = e.Execution.Instrument.MasterInstrument.Name;
+            string instrument    = e.Execution.Instrument.MasterInstrument.Name; // "ES", not "ES JUN26"
             string action        = e.Execution.MarketPosition == MarketPosition.Long ? "Buy" : "Sell";
             int    quantity      = e.Quantity;
             double price         = e.Price;
@@ -116,7 +91,7 @@ namespace NinjaTrader.NinjaScript.AddOns
             int previousPosition = action == "Buy" ? positionAfter - quantity : positionAfter + quantity;
             string marker = Math.Abs(positionAfter) < Math.Abs(previousPosition) ? "Exit" : "Entry";
 
-            // InvariantCulture: guarantees dot decimal separator regardless of Windows locale
+            // InvariantCulture ensures dot decimal separator regardless of Windows locale
             string priceStr = price.ToString("F4", CultureInfo.InvariantCulture);
 
             string jsonPayload = string.Format(
@@ -133,7 +108,7 @@ namespace NinjaTrader.NinjaScript.AddOns
                 time.ToString("o", CultureInfo.InvariantCulture)
             );
 
-            NinjaTrader.Code.Output.Process("Sending " + marker + " [" + instrument + " @ " + priceStr + "]...", PrintTo.OutputTab1);
+            NinjaTrader.Code.Output.Process("Sending " + marker + " [" + instrument + " @ " + priceStr + "] to Vercel...", PrintTo.OutputTab1);
 
             Task.Run(async () => await SendDataToServer(jsonPayload));
         }
@@ -142,12 +117,12 @@ namespace NinjaTrader.NinjaScript.AddOns
         {
             try
             {
-                var request = new HttpRequestMessage(HttpMethod.Post, ApiUrl)
+                var request = new HttpRequestMessage(HttpMethod.Post, apiUrl)
                 {
                     Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json")
                 };
                 request.Headers.Authorization =
-                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", ApiSecret);
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiSecret);
 
                 var response = await httpClient.SendAsync(request);
 
