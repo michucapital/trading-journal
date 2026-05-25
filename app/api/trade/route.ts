@@ -5,10 +5,17 @@ const POINT_VALUES: Record<string, number> = {
   "ES": 50,
   "MES": 5,
   "NQ": 20,
-  "MNQ": 2
+  "MNQ": 2,
 };
 
-// Safely coerce any DB or payload value to a finite number
+// Roundtrip commission per contract (entry + exit combined)
+const COMMISSION_RT: Record<string, number> = {
+  "ES":  5.76,  // $2.88 x2
+  "MES": 1.90,  // $0.95 x2
+  "NQ":  5.76,
+  "MNQ": 1.90,
+};
+
 const safeNum = (val: unknown, fallback = 0): number => {
   if (val === null || val === undefined) return fallback;
   const n = typeof val === 'string' ? parseFloat(val.replace(',', '.')) : Number(val);
@@ -65,15 +72,17 @@ export async function POST(request: Request) {
 
     if (!trade) {
       if (marker === 'Exit') {
-        // Orphaned exit: no open trade exists to close — discard safely
         console.warn(`Orphaned exit ignored: ${instrument} @ ${safePrice} executionId=${executionId}`);
         return NextResponse.json({ success: true, message: 'Orphaned exit ignored — no open trade found' });
       }
 
       // New entry fill — open a trade
       const tradeId  = `trade_${Date.now()}`;
-      const dateOnly = String(timestamp).substring(0, 10);
-      const timeOnly = String(timestamp).substring(11, 16);
+      // timestamp from NT8 is ISO 8601 with timezone offset (e.g. "2026-05-25T18:20:56-05:00")
+      // Parse it properly via Date so we always get correct UTC-based date/time
+      const tsDate   = new Date(String(timestamp));
+      const dateOnly = tsDate.toISOString().substring(0, 10);
+      const timeOnly = tsDate.toISOString().substring(11, 16);
 
       await sql`
         INSERT INTO trades (
@@ -108,23 +117,28 @@ export async function POST(request: Request) {
         const newAvgExit    = ((prevAvgExit * prevExitedQty) + (safePrice * safeQuantity)) / newExitedQty;
 
         if (isClosingFill) {
-          const ptValue  = POINT_VALUES[String(instrument)] || 1;
+          const instrKey = String(instrument);
+          const ptValue  = POINT_VALUES[instrKey]  || 1;
+          const commRT   = COMMISSION_RT[instrKey] || 0;
           const entryPx  = safeNum(trade.avg_entry_price);
           const totalQty = safeNum(trade.total_quantity);
-          const pnl      = trade.direction === 'Buy'
+
+          const grossPnl = trade.direction === 'Buy'
             ? (newAvgExit - entryPx) * totalQty * ptValue
             : (entryPx - newAvgExit) * totalQty * ptValue;
 
-          const stripTz   = (iso: string) => iso.replace('Z', '').replace(/[+-]\d{2}:\d{2}$/, '');
-          const startMs   = new Date(stripTz(`${trade.date}T${trade.exchange_time}:00`)).getTime();
-          const endMs     = new Date(stripTz(String(timestamp))).getTime();
+          const netPnl = grossPnl - commRT * totalQty;
+
+          // Use ISO timestamp directly — Date constructor handles timezone offsets correctly
+          const startMs   = new Date(`${trade.date}T${trade.exchange_time}:00Z`).getTime();
+          const endMs     = new Date(String(timestamp)).getTime();
           const timeInMin = Math.max(1, Math.round((endMs - startMs) / 60000));
 
           await sql`
             UPDATE trades
             SET avg_exit_price       = ${newAvgExit},
                 exited_quantity      = ${newExitedQty},
-                pnl                  = ${pnl},
+                pnl                  = ${netPnl},
                 time_in_position_min = ${timeInMin},
                 status               = 'CLOSED',
                 updated_at           = NOW()
