@@ -8,23 +8,19 @@ const POINT_VALUES: Record<string, number> = {
   "MNQ": 2
 };
 
-// Handle OPTIONS preflight requests (sent by HttpClient before POST)
-export async function OPTIONS() {
-  return new NextResponse(null, {
-    status: 204,
-    headers: {
-      'Allow': 'POST, OPTIONS',
-    },
-  });
-}
-
 export async function POST(request: Request) {
+  // Guard: ensure DB URL is configured
+  if (!process.env.POSTGRES_URL) {
+    console.error('POSTGRES_URL environment variable is not set');
+    return NextResponse.json({ error: 'Server misconfiguration: missing POSTGRES_URL' }, { status: 500 });
+  }
+
   try {
     const authHeader = request.headers.get('authorization');
     const secret = process.env.API_SECRET_TOKEN;
 
     if (!secret || authHeader !== `Bearer ${secret}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const payload = await request.json();
@@ -40,28 +36,38 @@ export async function POST(request: Request) {
       orderId
     } = payload;
 
-    // Safely parse numbers — guards against locale comma decimal separators
-    const safeParse = (val: unknown) => {
+    // Safely parse numbers — guards against any remaining locale comma separators
+    const safeParse = (val: unknown): number => {
       if (typeof val === 'number') return val;
       if (typeof val === 'string') return parseFloat(val.replace(',', '.'));
       return 0;
     };
 
-    const safePrice = safeParse(price);
+    const safePrice    = safeParse(price);
     const safeQuantity = typeof quantity === 'string' ? parseInt(quantity) : Number(quantity);
     const safePosition = typeof position === 'string' ? parseInt(position) : Number(position);
+    const isClosingFill = safePosition === 0;
 
-    const sql = neon(process.env.POSTGRES_URL!);
+    const sql = neon(process.env.POSTGRES_URL);
 
-    await sql`
+    // --- Step 1: Insert execution row (idempotent) ---
+    const inserted = await sql`
       INSERT INTO executions (
         execution_id, order_id, instrument, action, quantity, price, position_after, marker, timestamp
       ) VALUES (
-        ${executionId || 'manual'}, ${orderId || 'manual'}, ${instrument}, ${action}, ${safeQuantity}, ${safePrice}, ${safePosition}, ${marker}, ${timestamp}
+        ${executionId || 'manual'}, ${orderId || 'manual'}, ${instrument}, ${action},
+        ${safeQuantity}, ${safePrice}, ${safePosition}, ${marker}, ${timestamp}
       )
-      ON CONFLICT (execution_id) DO NOTHING;
+      ON CONFLICT (execution_id) DO NOTHING
+      RETURNING id;
     `;
 
+    // Bug 8 fix: if ON CONFLICT fired (duplicate execution_id), skip trade logic entirely
+    if (inserted.length === 0) {
+      return NextResponse.json({ success: true, message: 'Duplicate execution ignored' });
+    }
+
+    // --- Step 2: Find or create the open trade ---
     const activeTrades = await sql`
       SELECT * FROM trades
       WHERE instrument = ${instrument} AND status = 'OPEN'
@@ -69,80 +75,96 @@ export async function POST(request: Request) {
     `;
 
     const trade = activeTrades.length > 0 ? activeTrades[0] : null;
-    const isClosingFill = safePosition === 0;
 
     if (!trade) {
+      // No open trade exists — create one
       const tradeId = `trade_${Date.now()}`;
-      const dateOnly = timestamp.split('T')[0];
-      const timeOnly = timestamp.split('T')[1].substring(0, 5);
+      // timestamp is ISO 8601 from NT8: "2026-05-26T09:30:00.0000000"
+      // Store date and time parts directly from the NT8 timestamp (exchange local time)
+      const dateOnly = timestamp.substring(0, 10);           // "2026-05-26"
+      const timeOnly = timestamp.substring(11, 16);          // "09:30"
 
       await sql`
         INSERT INTO trades (
-          trade_id, date, exchange_time, direction, instrument, total_quantity, avg_entry_price, status
+          trade_id, date, exchange_time, direction, instrument,
+          total_quantity, avg_entry_price, status
         ) VALUES (
-          ${tradeId}, ${dateOnly}, ${timeOnly}, ${action}, ${instrument}, ${safeQuantity}, ${safePrice}, 'OPEN'
+          ${tradeId}, ${dateOnly}, ${timeOnly}, ${action}, ${instrument},
+          ${safeQuantity}, ${safePrice}, 'OPEN'
         )
       `;
+
     } else {
+
       if (marker === 'Entry') {
-        const oldTotalValue = Number(trade.avg_entry_price) * trade.total_quantity;
-        const newValueAdded = safePrice * safeQuantity;
-        const newTotalQty = trade.total_quantity + safeQuantity;
-        const newAvgEntry = (oldTotalValue + newValueAdded) / newTotalQty;
+        // Scale-in: recalculate weighted average entry
+        const oldTotalValue  = Number(trade.avg_entry_price) * Number(trade.total_quantity);
+        const newTotalQty    = Number(trade.total_quantity) + safeQuantity;
+        const newAvgEntry    = (oldTotalValue + safePrice * safeQuantity) / newTotalQty;
 
         await sql`
           UPDATE trades
-          SET total_quantity = ${newTotalQty},
+          SET total_quantity  = ${newTotalQty},
               avg_entry_price = ${newAvgEntry},
-              updated_at = NOW()
+              updated_at      = NOW()
           WHERE id = ${trade.id}
         `;
+
       } else if (marker === 'Exit') {
-        const currentExitQty = trade.avg_exit_price ? trade.total_quantity - Math.abs(safePosition) : 0;
-        const oldTotalExitValue = Number(trade.avg_exit_price || 0) * currentExitQty;
-        const newExitValue = safePrice * safeQuantity;
-        const newTotalExitQty = currentExitQty + safeQuantity;
-        const newAvgExit = (oldTotalExitValue + newExitValue) / newTotalExitQty;
+        // Bug 7 fix: track how many contracts have already exited using a dedicated column.
+        // exited_quantity starts at 0 and accumulates with each partial exit fill.
+        const prevExitedQty  = Number(trade.exited_quantity || 0);
+        const prevExitValue  = Number(trade.avg_exit_price  || 0) * prevExitedQty;
+        const newExitedQty   = prevExitedQty + safeQuantity;
+        const newAvgExit     = (prevExitValue + safePrice * safeQuantity) / newExitedQty;
 
         if (isClosingFill) {
-          const ptValue = POINT_VALUES[instrument] || 1;
-          const entryPx = Number(trade.avg_entry_price);
-          let pnl = 0;
+          const ptValue   = POINT_VALUES[instrument] || 1;
+          const entryPx   = Number(trade.avg_entry_price);
+          let   pnl       = 0;
 
           if (trade.direction === 'Buy') {
-            pnl = (newAvgExit - entryPx) * trade.total_quantity * ptValue;
+            pnl = (newAvgExit - entryPx) * Number(trade.total_quantity) * ptValue;
           } else {
-            pnl = (entryPx - newAvgExit) * trade.total_quantity * ptValue;
+            pnl = (entryPx - newAvgExit) * Number(trade.total_quantity) * ptValue;
           }
 
-          const startTime = new Date(`${new Date(trade.date).toISOString().split('T')[0]}T${trade.exchange_time}:00Z`);
-          const endTime = new Date(timestamp);
-          const timeInMin = Math.max(1, Math.round((endTime.getTime() - startTime.getTime()) / 60000));
+          // Bug 6 fix: parse both times as plain local strings — no UTC offset applied.
+          // NT8 sends exchange local time in the ISO string; we strip the timezone suffix
+          // and compare them as naive datetimes to get correct duration.
+          const stripTz = (iso: string) => iso.replace('Z', '').replace(/[+-]\d{2}:\d{2}$/, '');
+          const startMs = new Date(stripTz(trade.exchange_time_iso || `${trade.date}T${trade.exchange_time}:00`)).getTime();
+          const endMs   = new Date(stripTz(timestamp)).getTime();
+          const timeInMin = Math.max(1, Math.round((endMs - startMs) / 60000));
 
           await sql`
             UPDATE trades
-            SET avg_exit_price = ${newAvgExit},
-                pnl = ${pnl},
+            SET avg_exit_price    = ${newAvgExit},
+                exited_quantity   = ${newExitedQty},
+                pnl               = ${pnl},
                 time_in_position_min = ${timeInMin},
-                status = 'CLOSED',
-                updated_at = NOW()
+                status            = 'CLOSED',
+                updated_at        = NOW()
             WHERE id = ${trade.id}
           `;
         } else {
+          // Partial exit — update running exit average and exited quantity
           await sql`
             UPDATE trades
-            SET avg_exit_price = ${newAvgExit},
-                updated_at = NOW()
+            SET avg_exit_price  = ${newAvgExit},
+                exited_quantity = ${newExitedQty},
+                updated_at      = NOW()
             WHERE id = ${trade.id}
           `;
         }
       }
     }
 
-    return NextResponse.json({ success: true, message: "Execution processed" });
+    return NextResponse.json({ success: true, message: 'Execution processed' });
 
-  } catch (error: any) {
-    console.error("API Error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error('API Error:', msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
