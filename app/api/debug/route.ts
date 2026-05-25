@@ -15,3 +15,18 @@ export async function GET() {
 
   return NextResponse.json({ trades, executions, openTrades });
 }
+
+// DELETE /api/debug  — wipe all trades + executions so executions can be replayed
+// Protected by API secret
+export async function DELETE(request: Request) {
+  const authHeader = request.headers.get('authorization');
+  const secret = process.env.API_SECRET_TOKEN;
+  if (!secret || authHeader !== `Bearer ${secret}`) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const sql = neon(process.env.POSTGRES_URL!);
+  await sql`DELETE FROM trades`;
+  await sql`DELETE FROM executions`;
+  return NextResponse.json({ success: true, message: 'All trades and executions wiped' });
+}
