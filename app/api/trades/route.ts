@@ -17,7 +17,9 @@ export async function GET() {
   try {
     const trades = await sql`
       SELECT
-        id, trade_id, date, exchange_time, direction, instrument,
+        id, trade_id,
+        TO_CHAR(date, 'YYYY-MM-DD') AS date,
+        exchange_time, direction, instrument,
         total_quantity, avg_entry_price, avg_exit_price, exited_quantity,
         pnl, time_in_position_min, status,
         setup_name, risk_dollars, sl_ticks,
@@ -30,22 +32,21 @@ export async function GET() {
     `;
 
     const sessionNotes = await sql`
-      SELECT date, notes FROM session_notes ORDER BY date DESC
+      SELECT TO_CHAR(date, 'YYYY-MM-DD') AS date, notes FROM session_notes ORDER BY date DESC
     `;
 
     const notesMap: Record<string, string> = {};
     for (const row of sessionNotes) {
-      notesMap[String(row.date).substring(0, 10)] = row.notes ?? '';
+      notesMap[String(row.date)] = row.notes ?? '';
     }
 
     const days: Record<string, { date: string; sessionNotes: string; trades: unknown[] }> = {};
 
     for (const t of trades) {
-      const d = String(t.date).substring(0, 10);
+      const d = String(t.date); // already YYYY-MM-DD from TO_CHAR
       if (!days[d]) {
         days[d] = { date: d, sessionNotes: notesMap[d] ?? '', trades: [] };
       }
-      // Explicitly cast every numeric field — Neon returns NUMERIC/DECIMAL as strings
       days[d].trades.push({
         ...t,
         date:                 d,
