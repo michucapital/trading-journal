@@ -5,17 +5,20 @@ import { TradeRow } from './TradeRow';
 import type { DayGroup, Trade } from '@/types/journal';
 
 function formatDate(dateStr: string): string {
-  // dateStr should be YYYY-MM-DD; handle any ISO string by slicing to 10 chars first
   const clean = String(dateStr ?? '').substring(0, 10);
   const parts  = clean.split('-').map(Number);
   if (parts.length !== 3 || parts.some(isNaN)) return clean || 'Unknown date';
   const [year, month, day] = parts;
-  // Construct as local midnight — avoids any UTC shift
   const d = new Date(year, month - 1, day);
   if (isNaN(d.getTime())) return clean;
   return d.toLocaleDateString('en-GB', {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
   });
+}
+
+// Always returns a clean YYYY-MM-DD string safe to send to the API
+function safeDate(dateStr: string): string {
+  return String(dateStr ?? '').substring(0, 10);
 }
 
 const safeN = (v: number | null | undefined) => (v == null || !isFinite(v) ? 0 : v);
@@ -24,9 +27,9 @@ export function DayCard({ day, onDataChange }: {
   day: DayGroup;
   onDataChange: () => void;
 }) {
-  const [open, setOpen]             = useState(false);
-  const [notes, setNotes]           = useState(day.sessionNotes);
-  const [notesSaved, setNotesSaved] = useState(true);
+  const [open, setOpen]               = useState(false);
+  const [notes, setNotes]             = useState(day.sessionNotes);
+  const [notesSaved, setNotesSaved]   = useState(true);
   const [savingNotes, setSavingNotes] = useState(false);
   const [notesError, setNotesError]   = useState<string | null>(null);
 
@@ -49,9 +52,12 @@ export function DayCard({ day, onDataChange }: {
       const res = await fetch('/api/notes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date: day.date, notes }),
+        body: JSON.stringify({ date: safeDate(day.date), notes }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
       setNotesSaved(true);
     } catch (e) {
       setNotesError(e instanceof Error ? e.message : 'Save failed');
