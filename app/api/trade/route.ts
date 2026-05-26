@@ -8,10 +8,9 @@ const POINT_VALUES: Record<string, number> = {
   MNQ: 2,
 };
 
-// Roundtrip commission per contract
 const COMMISSION_RT: Record<string, number> = {
-  ES:  5.76,  // $2.88 x2
-  MES: 1.90,  // $0.95 x2
+  ES:  5.76,
+  MES: 1.90,
   NQ:  5.76,
   MNQ: 1.90,
 };
@@ -21,6 +20,25 @@ const safeNum = (val: unknown, fallback = 0): number => {
   const n = typeof val === 'string' ? parseFloat(val.replace(',', '.')) : Number(val);
   return isFinite(n) ? n : fallback;
 };
+
+/**
+ * NT8 sends timestamps like "2026-05-26T02:13:13.5690000" — 7 fractional digits.
+ * JavaScript Date only reliably parses up to 3 (milliseconds).
+ * We truncate to 3 decimal places before parsing.
+ */
+function parseNT8Timestamp(raw: string): Date {
+  // Normalise: trim to 3 decimal places on seconds, ensure Z suffix
+  const normalised = raw
+    .replace(/(\d{2}:\d{2}:\d{2}\.\d{0,3})\d*/, '$1') // keep max 3 decimal digits
+    .replace(/([+-]\d{2}:\d{2}|Z)?$/, (m) => m || 'Z');  // add Z if no tz
+  const d = new Date(normalised);
+  if (isNaN(d.getTime())) {
+    // Fallback: strip fractional seconds entirely
+    const stripped = raw.replace(/\.\d+/, '').replace(/([+-]\d{2}:\d{2}|Z)?$/, (m) => m || 'Z');
+    return new Date(stripped);
+  }
+  return d;
+}
 
 export async function POST(request: Request) {
   if (!process.env.POSTGRES_URL) {
@@ -37,11 +55,12 @@ export async function POST(request: Request) {
     }
 
     payload = await request.json();
-    const { instrument, action, quantity, price, position, timestamp, executionId, orderId } = payload;
+    const { instrument, action, quantity, price, position, timestamp, executionId, orderId, marker } = payload;
 
     const safePrice    = safeNum(price);
     const safeQuantity = safeNum(quantity);
     const safePosition = safeNum(position);
+    const markerStr    = String(marker || '');
 
     const sql = neon(process.env.POSTGRES_URL);
 
@@ -57,7 +76,7 @@ export async function POST(request: Request) {
         ${safeQuantity},
         ${safePrice},
         ${safePosition},
-        ${''},
+        ${markerStr},
         ${String(timestamp)}
       )
       ON CONFLICT (execution_id) DO NOTHING
@@ -68,36 +87,71 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: true, message: 'Duplicate execution ignored' });
     }
 
-    // ── Step 2: Determine what this fill does to the open trade ───────────────
-    //
-    // Key insight: we use position_after (signed) to determine everything.
-    //   position_after  = 0           → closes the trade fully
-    //   position_after  = same sign   → scale-in (adding) or partial exit (reducing)
-    //   position_after  = flipped sign → direction flip: close current + open new
-    //
-    // "action" from NT8 is the fill side (Buy/Sell), not the trade direction.
-    // We derive direction from the sign of position_after.
-
+    // ── Step 2: Parse timestamp (handles NT8's 7-decimal format) ─────────────
     const instrKey = String(instrument);
-    const tsDate   = new Date(String(timestamp));
+    const tsDate   = parseNT8Timestamp(String(timestamp));
     const dateOnly = tsDate.toISOString().substring(0, 10);
     const timeOnly = tsDate.toISOString().substring(11, 16);
 
+    // ── Step 3: Find open trade for this instrument ───────────────────────────
     const activeTrades = await sql`
       SELECT * FROM trades
       WHERE instrument = ${instrKey} AND status = 'OPEN'
+      ORDER BY updated_at DESC
       LIMIT 1
     `;
     const trade = activeTrades.length > 0 ? activeTrades[0] : null;
 
+    // ── Helper: safely parse a stored HH:MM or HH:MM:SS exchange_time ────────
+    function buildStartDate(tradeRow: Record<string, unknown>): Date {
+      const dateStr = String(tradeRow.date).substring(0, 10);
+      const timeStr = String(tradeRow.exchange_time).substring(0, 5); // HH:MM
+      const d = new Date(`${dateStr}T${timeStr}:00Z`);
+      return isNaN(d.getTime()) ? tsDate : d; // fallback to current fill time
+    }
+
+    // ── Helper: close a trade row ─────────────────────────────────────────────
+    async function closeTrade(closeQty: number, closePrice: number, openTrade: Record<string, unknown>) {
+      const prevExited  = safeNum(openTrade.exited_quantity, 0);
+      const prevAvgExit = safeNum(openTrade.avg_exit_price,  0);
+      const newExited   = prevExited + closeQty;
+      const newAvgExit  = newExited > 0
+        ? ((prevAvgExit * prevExited) + (closePrice * closeQty)) / newExited
+        : closePrice;
+
+      const ptValue  = POINT_VALUES[instrKey]  || 1;
+      const commRT   = COMMISSION_RT[instrKey] || 0;
+      const entryPx  = safeNum(openTrade.avg_entry_price);
+      const totalQty = safeNum(openTrade.total_quantity);
+
+      const grossPnl = openTrade.direction === 'Buy'
+        ? (newAvgExit - entryPx) * totalQty * ptValue
+        : (entryPx - newAvgExit) * totalQty * ptValue;
+      const netPnl = grossPnl - commRT * totalQty;
+
+      const startMs   = buildStartDate(openTrade).getTime();
+      const endMs     = tsDate.getTime();
+      const diffMin   = (endMs - startMs) / 60000;
+      // Guard: if diff is negative or NaN (clocks, bad data), default to 1
+      const timeInMin = isFinite(diffMin) && diffMin > 0 ? Math.round(diffMin) : 1;
+
+      await sql`
+        UPDATE trades
+        SET avg_exit_price       = ${newAvgExit},
+            exited_quantity      = ${newExited},
+            pnl                  = ${netPnl},
+            time_in_position_min = ${timeInMin},
+            status               = ${'CLOSED'},
+            updated_at           = NOW()
+        WHERE id = ${openTrade.id}
+      `;
+    }
+
     // ── No open trade ─────────────────────────────────────────────────────────
     if (!trade) {
       if (safePosition === 0) {
-        // Fill that results in flat with no prior trade — ignore
         return NextResponse.json({ success: true, message: 'Flat fill with no open trade — ignored' });
       }
-
-      // Open a fresh trade
       const tradeDirection = safePosition > 0 ? 'Buy' : 'Sell';
       await sql`
         INSERT INTO trades (
@@ -118,66 +172,23 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: true, message: 'New trade opened' });
     }
 
-    // ── There is an open trade ─────────────────────────────────────────────────
-    const prevPosition  = safeNum(trade.direction === 'Buy' ? trade.total_quantity : -trade.total_quantity);
-    // prevPosition is the signed net position before this fill
-    // After this fill it becomes safePosition
-
-    const isFlip        = safePosition !== 0 && (
-      (prevPosition > 0 && safePosition < 0) ||
-      (prevPosition < 0 && safePosition > 0)
-    );
-    const isClose       = safePosition === 0;
-    const isReducing    = !isFlip && Math.abs(safePosition) < Math.abs(prevPosition);
-    const isAdding      = !isFlip && !isClose && !isReducing;
-
-    // Helper: close an open trade row
-    async function closeTrade(closeQty: number, closePrice: number, openTrade: Record<string, unknown>) {
-      const prevExited  = safeNum(openTrade.exited_quantity, 0);
-      const prevAvgExit = safeNum(openTrade.avg_exit_price,  0);
-      const newExited   = prevExited + closeQty;
-      const newAvgExit  = ((prevAvgExit * prevExited) + (closePrice * closeQty)) / newExited;
-
-      const ptValue  = POINT_VALUES[instrKey]  || 1;
-      const commRT   = COMMISSION_RT[instrKey] || 0;
-      const entryPx  = safeNum(openTrade.avg_entry_price);
-      const totalQty = safeNum(openTrade.total_quantity);
-
-      const grossPnl = openTrade.direction === 'Buy'
-        ? (newAvgExit - entryPx) * totalQty * ptValue
-        : (entryPx - newAvgExit) * totalQty * ptValue;
-      const netPnl = grossPnl - commRT * totalQty;
-
-      const startMs   = new Date(`${String(openTrade.date).substring(0,10)}T${openTrade.exchange_time}:00Z`).getTime();
-      const endMs     = tsDate.getTime();
-      const timeInMin = Math.max(1, Math.round((endMs - startMs) / 60000));
-
-      await sql`
-        UPDATE trades
-        SET avg_exit_price       = ${newAvgExit},
-            exited_quantity      = ${newExited},
-            pnl                  = ${netPnl},
-            time_in_position_min = ${timeInMin},
-            status               = ${'CLOSED'},
-            updated_at           = NOW()
-        WHERE id = ${openTrade.id}
-      `;
-    }
+    // ── Open trade exists ─────────────────────────────────────────────────────
+    const prevQtyRaw  = safeNum(trade.total_quantity);
+    const prevPos     = trade.direction === 'Buy' ? prevQtyRaw : -prevQtyRaw;
+    const isFlip      = safePosition !== 0 && ((prevPos > 0 && safePosition < 0) || (prevPos < 0 && safePosition > 0));
+    const isClose     = safePosition === 0;
+    const isReducing  = !isFlip && !isClose && Math.abs(safePosition) < Math.abs(prevPos);
+    const isAdding    = !isFlip && !isClose && !isReducing;
 
     if (isClose) {
-      // Full close
       await closeTrade(safeQuantity, safePrice, trade);
       return NextResponse.json({ success: true, message: 'Trade closed' });
     }
 
     if (isFlip) {
-      // Close the existing trade with the portion that covers it, then open a new one
-      const closingQty  = Math.abs(prevPosition);         // qty needed to flatten
-      const openingQty  = Math.abs(safePosition);         // remaining qty opens new trade
-
+      const closingQty = Math.abs(prevPos);
+      const openingQty = Math.abs(safePosition);
       await closeTrade(closingQty, safePrice, trade);
-
-      // Open new trade in the flipped direction
       const newDirection = safePosition > 0 ? 'Buy' : 'Sell';
       await sql`
         INSERT INTO trades (
@@ -199,12 +210,12 @@ export async function POST(request: Request) {
     }
 
     if (isReducing) {
-      // Partial exit — update exit avg but don’t close yet
       const prevExited  = safeNum(trade.exited_quantity, 0);
       const prevAvgExit = safeNum(trade.avg_exit_price,  0);
       const newExited   = prevExited + safeQuantity;
-      const newAvgExit  = ((prevAvgExit * prevExited) + (safePrice * safeQuantity)) / newExited;
-
+      const newAvgExit  = newExited > 0
+        ? ((prevAvgExit * prevExited) + (safePrice * safeQuantity)) / newExited
+        : safePrice;
       await sql`
         UPDATE trades
         SET avg_exit_price  = ${newAvgExit},
@@ -216,12 +227,9 @@ export async function POST(request: Request) {
     }
 
     if (isAdding) {
-      // Scale-in: add to existing position
-      const prevQty    = safeNum(trade.total_quantity);
-      const prevAvgPx  = safeNum(trade.avg_entry_price);
-      const newQty     = prevQty + safeQuantity;
-      const newAvgPx   = ((prevAvgPx * prevQty) + (safePrice * safeQuantity)) / newQty;
-
+      const prevAvgPx = safeNum(trade.avg_entry_price);
+      const newQty    = prevQtyRaw + safeQuantity;
+      const newAvgPx  = ((prevAvgPx * prevQtyRaw) + (safePrice * safeQuantity)) / newQty;
       await sql`
         UPDATE trades
         SET total_quantity  = ${newQty},
