@@ -5,23 +5,30 @@ import { TradeRow } from './TradeRow';
 import type { DayGroup, Trade } from '@/types/journal';
 
 function formatDate(dateStr: string) {
-  const d = new Date(dateStr + 'T12:00:00Z');
-  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+  // dateStr is always YYYY-MM-DD from the API
+  // Parse manually to avoid any timezone shift
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const d = new Date(year, month - 1, day); // local time — no UTC shift
+  return d.toLocaleDateString('en-US', {
+    weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+  });
 }
+
+const safeN = (v: number | null | undefined) => (v == null || !isFinite(v) ? 0 : v);
 
 export function DayCard({ day, onDataChange }: {
   day: DayGroup;
   onDataChange: () => void;
 }) {
-  const [open, setOpen]         = useState(false);
-  const [notes, setNotes]       = useState(day.sessionNotes);
+  const [open, setOpen]             = useState(false);
+  const [notes, setNotes]           = useState(day.sessionNotes);
   const [notesSaved, setNotesSaved] = useState(true);
   const [savingNotes, setSavingNotes] = useState(false);
 
   const closedTrades = day.trades.filter(t => t.status === 'CLOSED');
-  const totalPnl  = closedTrades.reduce((s, t) => s + (t.pnl ?? 0), 0);
-  const winners   = closedTrades.filter(t => (t.pnl ?? 0) > 0).length;
-  const losers    = closedTrades.filter(t => (t.pnl ?? 0) < 0).length;
+  const totalPnl  = closedTrades.reduce((s, t) => s + safeN(t.pnl), 0);
+  const winners   = closedTrades.filter(t => safeN(t.pnl) > 0).length;
+  const losers    = closedTrades.filter(t => safeN(t.pnl) < 0).length;
   const winRate   = closedTrades.length > 0 ? Math.round((winners / closedTrades.length) * 100) : null;
 
   const pnlColor = totalPnl > 0
@@ -57,13 +64,11 @@ export function DayCard({ day, onDataChange }: {
 
   return (
     <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
-      {/* Day header */}
       <button
         onClick={() => setOpen(o => !o)}
         className="w-full flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-4 hover:bg-muted/40 transition-colors text-left"
       >
         <span className="font-semibold text-base">{formatDate(day.date)}</span>
-
         <div className="flex items-center gap-3 ml-auto">
           {winRate != null && (
             <span className="text-xs text-muted-foreground tabular-nums">{winners}W / {losers}L · {winRate}%</span>
@@ -85,7 +90,6 @@ export function DayCard({ day, onDataChange }: {
 
       {open && (
         <div className="border-t border-border">
-          {/* Session notes */}
           <div className="px-5 py-4 bg-muted/20 border-b border-border">
             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Session Notes</label>
             <textarea
@@ -106,8 +110,6 @@ export function DayCard({ day, onDataChange }: {
               </button>
             </div>
           </div>
-
-          {/* Trade list */}
           <div className="px-5 py-4 flex flex-col gap-2">
             {day.trades.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-6">No trades recorded for this day.</p>

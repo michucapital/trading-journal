@@ -1,8 +1,12 @@
 import { NextResponse } from 'next/server';
 import { neon } from '@neondatabase/serverless';
 
-// GET /api/trades
-// Returns all CLOSED trades ordered newest-day-first, newest-trade-first within each day.
+const toNum = (v: unknown): number | null => {
+  if (v === null || v === undefined) return null;
+  const n = Number(v);
+  return isFinite(n) ? n : null;
+};
+
 export async function GET() {
   if (!process.env.POSTGRES_URL) {
     return NextResponse.json({ error: 'Missing POSTGRES_URL' }, { status: 500 });
@@ -25,7 +29,6 @@ export async function GET() {
       ORDER BY date DESC, exchange_time DESC
     `;
 
-    // Fetch session notes so the UI can merge them with day groups
     const sessionNotes = await sql`
       SELECT date, notes FROM session_notes ORDER BY date DESC
     `;
@@ -35,20 +38,36 @@ export async function GET() {
       notesMap[String(row.date).substring(0, 10)] = row.notes ?? '';
     }
 
-    // Group trades by date
-    const days: Record<string, { date: string; sessionNotes: string; trades: typeof trades }> = {};
+    const days: Record<string, { date: string; sessionNotes: string; trades: unknown[] }> = {};
+
     for (const t of trades) {
       const d = String(t.date).substring(0, 10);
       if (!days[d]) {
         days[d] = { date: d, sessionNotes: notesMap[d] ?? '', trades: [] };
       }
-      days[d].trades.push(t);
+      // Explicitly cast every numeric field — Neon returns NUMERIC/DECIMAL as strings
+      days[d].trades.push({
+        ...t,
+        date:                 d,
+        total_quantity:       toNum(t.total_quantity),
+        avg_entry_price:      toNum(t.avg_entry_price),
+        avg_exit_price:       toNum(t.avg_exit_price),
+        exited_quantity:      toNum(t.exited_quantity),
+        pnl:                  toNum(t.pnl),
+        time_in_position_min: toNum(t.time_in_position_min),
+        risk_dollars:         toNum(t.risk_dollars),
+        sl_ticks:             toNum(t.sl_ticks),
+        tp1:                  toNum(t.tp1),
+        tp2:                  toNum(t.tp2),
+        tp3:                  toNum(t.tp3),
+        mfe_ticks:            toNum(t.mfe_ticks),
+        mae_ticks:            toNum(t.mae_ticks),
+      });
     }
 
-    // Return as array sorted newest-first
     const result = Object.values(days).sort((a, b) => b.date.localeCompare(a.date));
-
     return NextResponse.json({ days: result });
+
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: msg }, { status: 500 });
