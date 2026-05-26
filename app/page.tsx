@@ -1,13 +1,15 @@
 'use client';
 import { useEffect, useState, useCallback } from 'react';
-import { RefreshCw, BookOpen } from 'lucide-react';
+import { RefreshCw, BookOpen, Download } from 'lucide-react';
 import { DayCard } from '@/components/journal/DayCard';
 import type { JournalData } from '@/types/journal';
 
 export default function JournalPage() {
-  const [data, setData]       = useState<JournalData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState<string | null>(null);
+  const [data, setData]             = useState<JournalData | null>(null);
+  const [loading, setLoading]       = useState(true);
+  const [error, setError]           = useState<string | null>(null);
+  const [exporting, setExporting]   = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -26,6 +28,33 @@ export default function JournalPage() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
+  const handleExport = useCallback(async () => {
+    setExporting(true);
+    setExportError(null);
+    try {
+      const res = await fetch('/api/export');
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const today = new Date().toISOString().slice(0, 10);
+      const filename = `journal-${today}.json`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : 'Export failed');
+    } finally {
+      setExporting(false);
+    }
+  }, []);
+
   const totalTrades = data?.days.reduce((s, d) => s + d.trades.length, 0) ?? 0;
 
   return (
@@ -37,9 +66,9 @@ export default function JournalPage() {
             <BookOpen size={20} className="text-primary" />
             <span className="font-semibold text-base">Trading Journal</span>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
             {data && (
-              <span className="hidden sm:block text-sm text-muted-foreground">
+              <span className="hidden sm:block text-sm text-muted-foreground mr-2">
                 {data.days.length} sessions · {totalTrades} trades
               </span>
             )}
@@ -50,6 +79,19 @@ export default function JournalPage() {
             >
               <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
               Refresh
+            </button>
+            <button
+              onClick={handleExport}
+              disabled={exporting}
+              title={exportError ?? undefined}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm border transition-colors disabled:opacity-50 ${
+                exportError
+                  ? 'border-destructive/50 text-destructive hover:bg-destructive/10'
+                  : 'border-border hover:bg-muted'
+              }`}
+            >
+              <Download size={14} />
+              {exporting ? 'Exporting…' : exportError ? 'Export failed' : 'Export'}
             </button>
           </div>
         </div>
