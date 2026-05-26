@@ -1,6 +1,15 @@
 import { NextResponse } from 'next/server';
 import { neon } from '@neondatabase/serverless';
 
+export async function GET() {
+  if (!process.env.POSTGRES_URL) {
+    return NextResponse.json({ error: 'Missing POSTGRES_URL' }, { status: 500 });
+  }
+  const sql = neon(process.env.POSTGRES_URL);
+  const rows = await sql`SELECT * FROM session_notes ORDER BY date DESC`;
+  return NextResponse.json({ rows });
+}
+
 export async function POST(request: Request) {
   if (!process.env.POSTGRES_URL) {
     return NextResponse.json({ error: 'Missing POSTGRES_URL' }, { status: 500 });
@@ -23,26 +32,16 @@ export async function POST(request: Request) {
 
   try {
     await sql`
-      CREATE TABLE IF NOT EXISTS session_notes (
-        id         SERIAL PRIMARY KEY,
-        date       DATE        UNIQUE NOT NULL,
-        notes      TEXT,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `;
-
-    await sql`
       INSERT INTO session_notes (date, notes, updated_at)
       VALUES (${date}, ${notes ?? ''}, NOW())
       ON CONFLICT (date)
       DO UPDATE SET notes = EXCLUDED.notes, updated_at = NOW()
     `;
-
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, date, notes });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
     console.error('Notes save error:', msg);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return NextResponse.json({ error: msg, stack, receivedDate: date, receivedNotes: notes }, { status: 500 });
   }
 }
