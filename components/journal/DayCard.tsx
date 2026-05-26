@@ -1,5 +1,5 @@
 'use client';
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { ChevronDown, ChevronUp, TrendingUp, TrendingDown } from 'lucide-react';
 import { TradeRow } from './TradeRow';
 import type { DayGroup, Trade } from '@/types/journal';
@@ -16,12 +16,43 @@ function formatDate(dateStr: string): string {
   });
 }
 
-// Always returns a clean YYYY-MM-DD string safe to send to the API
-function safeDate(dateStr: string): string {
-  return String(dateStr ?? '').substring(0, 10);
-}
-
 const safeN = (v: number | null | undefined) => (v == null || !isFinite(v) ? 0 : v);
+
+function AutoTextarea({
+  value,
+  onChange,
+  onBlur,
+  placeholder,
+  className,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onBlur: () => void;
+  placeholder: string;
+  className: string;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = el.scrollHeight + 'px';
+  }, [value]);
+
+  return (
+    <textarea
+      ref={ref}
+      value={value}
+      rows={1}
+      onChange={e => onChange(e.target.value)}
+      onBlur={onBlur}
+      placeholder={placeholder}
+      className={className}
+      style={{ overflow: 'hidden' }}
+    />
+  );
+}
 
 export function DayCard({ day, onDataChange }: {
   day: DayGroup;
@@ -52,12 +83,9 @@ export function DayCard({ day, onDataChange }: {
       const res = await fetch('/api/notes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date: safeDate(day.date), notes }),
+        body: JSON.stringify({ date: day.date, notes }),
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({})) as { error?: string };
-        throw new Error(body.error ?? `HTTP ${res.status}`);
-      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setNotesSaved(true);
     } catch (e) {
       setNotesError(e instanceof Error ? e.message : 'Save failed');
@@ -99,7 +127,7 @@ export function DayCard({ day, onDataChange }: {
         <span className="font-semibold text-base tracking-tight">{formatDate(day.date)}</span>
         <div className="flex items-center gap-3 ml-auto">
           {winRate != null && (
-            <span className="text-xs text-muted-foreground tabular-nums">{winners}W / {losers}L · {winRate}%</span>
+            <span className="text-xs text-muted-foreground tabular-nums">{winners}W&nbsp;/&nbsp;{losers}L&nbsp;·&nbsp;{winRate}%</span>
           )}
           <span className="text-xs text-muted-foreground tabular-nums">
             {day.trades.length} trade{day.trades.length !== 1 ? 's' : ''}
@@ -122,13 +150,12 @@ export function DayCard({ day, onDataChange }: {
         <div className="border-t border-border">
           <div className="px-5 py-4 bg-muted/10 border-b border-border">
             <label className="text-xs font-medium text-muted-foreground uppercase tracking-widest">Session Notes</label>
-            <textarea
+            <AutoTextarea
               value={notes}
-              onChange={e => { setNotes(e.target.value); setNotesSaved(false); }}
+              onChange={v => { setNotes(v); setNotesSaved(false); }}
               onBlur={saveNotes}
-              rows={2}
               placeholder="Market context, what you focused on, overall session observations..."
-              className="mt-2 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none placeholder:text-muted-foreground/50"
+              className="mt-2 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
             />
             <div className="flex items-center justify-between mt-1.5">
               {notesError
