@@ -3,11 +3,11 @@ import { useState } from 'react';
 import { ChevronDown, ChevronUp, Trash2, Save } from 'lucide-react';
 import type { Trade } from '@/types/journal';
 
+// ── UPDATE YOUR SETUPS HERE ──────────────────────────────────────────────────
 const SETUPS = [
-  'ICT BPR', 'ICT OTE', 'ICT FVG Retest', 'ICT Breaker',
-  'ICT Order Block', 'ICT Rejection Block', 'ICT CISD',
-  'Liquidity Grab', 'Range Break', 'News Trade', 'Other',
+  'ADD YOUR SETUPS',  // ← replace these lines with your actual setup names
 ];
+// ────────────────────────────────────────────────────────────────────────────
 
 // Safe formatter — never calls .toFixed on null/undefined/NaN
 const fmt = (n: number | null | undefined, digits = 2): string => {
@@ -17,8 +17,8 @@ const fmt = (n: number | null | undefined, digits = 2): string => {
 
 const pnlClass = (pnl: number | null) => {
   if (pnl == null || !isFinite(pnl)) return 'text-muted-foreground';
-  if (pnl > 0) return 'text-emerald-600 dark:text-emerald-400 font-semibold tabular-nums';
-  if (pnl < 0) return 'text-red-500 dark:text-red-400 font-semibold tabular-nums';
+  if (pnl > 0) return 'text-emerald-400 font-semibold tabular-nums';
+  if (pnl < 0) return 'text-red-400 font-semibold tabular-nums';
   return 'text-muted-foreground tabular-nums';
 };
 
@@ -30,6 +30,7 @@ export function TradeRow({ trade, onDelete, onSave }: {
   const [open, setOpen]     = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const [setupName, setSetupName]         = useState(trade.setup_name     ?? '');
   const [riskDollars, setRiskDollars]     = useState<string>(trade.risk_dollars != null ? String(trade.risk_dollars) : '');
@@ -44,25 +45,31 @@ export function TradeRow({ trade, onDelete, onSave }: {
   const [notes, setNotes]                 = useState(trade.notes          ?? '');
 
   const dirBadge = trade.direction === 'Buy'
-    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
-    : 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300';
+    ? 'bg-emerald-900/50 text-emerald-300 border border-emerald-700/40'
+    : 'bg-red-900/50 text-red-300 border border-red-700/40';
 
   async function handleSave() {
     setSaving(true);
-    await onSave(trade.id, {
-      setup_name:     setupName     || null,
-      risk_dollars:   riskDollars !== '' ? Number(riskDollars) : null,
-      sl_ticks:       slTicks     !== '' ? Number(slTicks)     : null,
-      tp1:            tp1         !== '' ? Number(tp1)         : null,
-      tp2:            tp2         !== '' ? Number(tp2)         : null,
-      tp3:            tp3         !== '' ? Number(tp3)         : null,
-      dex_reached:    dexReached,
-      mfe_ticks:      mfeTicks    !== '' ? Number(mfeTicks)    : null,
-      mae_ticks:      maeTicks    !== '' ? Number(maeTicks)    : null,
-      rule_adherence: ruleAdherence,
-      notes:          notes || null,
-    });
-    setSaving(false);
+    setSaveError(null);
+    try {
+      await onSave(trade.id, {
+        setup_name:     setupName     || null,
+        risk_dollars:   riskDollars !== '' ? Number(riskDollars) : null,
+        sl_ticks:       slTicks     !== '' ? Number(slTicks)     : null,
+        tp1:            tp1         !== '' ? Number(tp1)         : null,
+        tp2:            tp2         !== '' ? Number(tp2)         : null,
+        tp3:            tp3         !== '' ? Number(tp3)         : null,
+        dex_reached:    dexReached,
+        mfe_ticks:      mfeTicks    !== '' ? Number(mfeTicks)    : null,
+        mae_ticks:      maeTicks    !== '' ? Number(maeTicks)    : null,
+        rule_adherence: ruleAdherence,
+        notes:          notes || null,
+      });
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : 'Save failed');
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function handleDelete() {
@@ -76,26 +83,26 @@ export function TradeRow({ trade, onDelete, onSave }: {
       {/* Summary row */}
       <button
         onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-3 px-4 py-3 bg-card hover:bg-muted/50 transition-colors text-left"
+        className="w-full flex flex-wrap items-center gap-2 px-4 py-3 bg-card hover:bg-muted/50 transition-colors text-left"
       >
-        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${dirBadge}`}>
+        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium shrink-0 ${dirBadge}`}>
           {trade.direction === 'Buy' ? 'LONG' : 'SHORT'}
         </span>
-        <span className="font-mono text-sm font-medium w-14">{trade.instrument}</span>
-        <span className="text-sm text-muted-foreground w-12 tabular-nums">{trade.exchange_time}</span>
-        <span className="text-sm tabular-nums w-16">{trade.total_quantity ?? '—'}x</span>
-        <span className="text-sm tabular-nums flex-1">
+        <span className="font-mono text-sm font-medium shrink-0">{trade.instrument}</span>
+        <span className="text-sm text-muted-foreground shrink-0 tabular-nums">{trade.exchange_time}</span>
+        <span className="text-sm tabular-nums shrink-0">{trade.total_quantity ?? '—'}x</span>
+        <span className="text-sm tabular-nums flex-1 min-w-0 truncate">
           {fmt(trade.avg_entry_price, 4)}
           {trade.avg_exit_price != null && <> → {fmt(trade.avg_exit_price, 4)}</>}
         </span>
         {trade.time_in_position_min != null && (
-          <span className="text-xs text-muted-foreground w-16 tabular-nums">{trade.time_in_position_min}m</span>
+          <span className="text-xs text-muted-foreground shrink-0 tabular-nums">{trade.time_in_position_min}m</span>
         )}
-        <span className={`w-24 text-right text-sm ${pnlClass(trade.pnl)}`}>
-          {trade.pnl != null && isFinite(trade.pnl) ? `$${fmt(trade.pnl)}` : '—'}
+        <span className={`shrink-0 text-right text-sm min-w-[5rem] ${pnlClass(trade.pnl)}`}>
+          {trade.pnl != null && isFinite(trade.pnl) ? `${trade.pnl >= 0 ? '+' : ''}$${fmt(trade.pnl)}` : '—'}
         </span>
         {trade.setup_name && (
-          <span className="hidden sm:inline text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded w-36 truncate">
+          <span className="hidden sm:inline text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded shrink-0 max-w-[9rem] truncate">
             {trade.setup_name}
           </span>
         )}
@@ -106,7 +113,7 @@ export function TradeRow({ trade, onDelete, onSave }: {
 
       {/* Expanded details */}
       {open && (
-        <div className="border-t border-border bg-muted/20 px-4 py-4">
+        <div className="border-t border-border bg-muted/10 px-4 py-4">
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
             <div className="flex flex-col gap-1">
               <label className="text-xs text-muted-foreground uppercase tracking-wide">Setup</label>
@@ -175,6 +182,7 @@ export function TradeRow({ trade, onDelete, onSave }: {
               className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none" />
           </div>
           <div className="mt-3 flex items-center gap-2 justify-end">
+            {saveError && <span className="text-xs text-destructive mr-auto">{saveError}</span>}
             <button onClick={handleDelete} disabled={deleting}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm text-destructive border border-destructive/30 hover:bg-destructive/10 transition-colors disabled:opacity-50">
               <Trash2 size={14} />{deleting ? 'Deleting…' : 'Delete'}

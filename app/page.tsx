@@ -5,9 +5,9 @@ import { DayCard } from '@/components/journal/DayCard';
 import type { JournalData } from '@/types/journal';
 
 export default function JournalPage() {
-  const [data, setData]     = useState<JournalData | null>(null);
+  const [data, setData]       = useState<JournalData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError]   = useState<string | null>(null);
+  const [error, setError]     = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -26,10 +26,6 @@ export default function JournalPage() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  const totalPnl = data?.days.reduce(
-    (s, d) => s + d.trades.reduce((ts, t) => ts + (t.pnl ?? 0), 0), 0
-  ) ?? 0;
-
   const totalTrades = data?.days.reduce((s, d) => s + d.trades.length, 0) ?? 0;
 
   return (
@@ -43,16 +39,9 @@ export default function JournalPage() {
           </div>
           <div className="flex items-center gap-4">
             {data && (
-              <div className="hidden sm:flex items-center gap-4 text-sm text-muted-foreground">
-                <span>{data.days.length} sessions · {totalTrades} trades</span>
-                <span className={`font-mono font-semibold tabular-nums ${
-                  totalPnl > 0 ? 'text-emerald-600 dark:text-emerald-400'
-                  : totalPnl < 0 ? 'text-red-500 dark:text-red-400'
-                  : ''
-                }`}>
-                  All-time: {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}
-                </span>
-              </div>
+              <span className="hidden sm:block text-sm text-muted-foreground">
+                {data.days.length} sessions · {totalTrades} trades
+              </span>
             )}
             <button
               onClick={loadData}

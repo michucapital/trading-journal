@@ -5,12 +5,11 @@ import { TradeRow } from './TradeRow';
 import type { DayGroup, Trade } from '@/types/journal';
 
 function formatDate(dateStr: string) {
-  // dateStr is always YYYY-MM-DD from the API
-  // Parse manually to avoid any timezone shift
+  // Parse as local date — avoid UTC shift
   const [year, month, day] = dateStr.split('-').map(Number);
-  const d = new Date(year, month - 1, day); // local time — no UTC shift
-  return d.toLocaleDateString('en-US', {
-    weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+  const d = new Date(year, month - 1, day);
+  return d.toLocaleDateString('en-GB', {
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
   });
 }
 
@@ -24,6 +23,7 @@ export function DayCard({ day, onDataChange }: {
   const [notes, setNotes]           = useState(day.sessionNotes);
   const [notesSaved, setNotesSaved] = useState(true);
   const [savingNotes, setSavingNotes] = useState(false);
+  const [notesError, setNotesError]   = useState<string | null>(null);
 
   const closedTrades = day.trades.filter(t => t.status === 'CLOSED');
   const totalPnl  = closedTrades.reduce((s, t) => s + safeN(t.pnl), 0);
@@ -32,33 +32,50 @@ export function DayCard({ day, onDataChange }: {
   const winRate   = closedTrades.length > 0 ? Math.round((winners / closedTrades.length) * 100) : null;
 
   const pnlColor = totalPnl > 0
-    ? 'text-emerald-600 dark:text-emerald-400'
+    ? 'text-emerald-400'
     : totalPnl < 0
-    ? 'text-red-500 dark:text-red-400'
+    ? 'text-red-400'
     : 'text-muted-foreground';
 
   async function saveNotes() {
     setSavingNotes(true);
-    await fetch('/api/notes', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ date: day.date, notes }),
-    });
-    setSavingNotes(false);
-    setNotesSaved(true);
+    setNotesError(null);
+    try {
+      const res = await fetch('/api/notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: day.date, notes }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setNotesSaved(true);
+    } catch (e) {
+      setNotesError(e instanceof Error ? e.message : 'Save failed');
+    } finally {
+      setSavingNotes(false);
+    }
   }
 
   const handleDelete = useCallback(async (id: number) => {
-    await fetch(`/api/trades/${id}`, { method: 'DELETE' });
+    const res = await fetch(`/api/trades/${id}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({})) as { error?: string };
+      alert(`Delete failed: ${body.error ?? res.status}`);
+      return;
+    }
     onDataChange();
   }, [onDataChange]);
 
   const handleSave = useCallback(async (id: number, fields: Partial<Trade>) => {
-    await fetch(`/api/trades/${id}`, {
+    const res = await fetch(`/api/trades/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(fields),
     });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({})) as { error?: string };
+      alert(`Save failed: ${body.error ?? res.status}`);
+      return;
+    }
     onDataChange();
   }, [onDataChange]);
 
@@ -78,9 +95,9 @@ export function DayCard({ day, onDataChange }: {
             {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}
           </span>
           {totalPnl > 0
-            ? <TrendingUp size={16} className="text-emerald-500" />
+            ? <TrendingUp size={16} className="text-emerald-400" />
             : totalPnl < 0
-            ? <TrendingDown size={16} className="text-red-500" />
+            ? <TrendingDown size={16} className="text-red-400" />
             : null}
           {open
             ? <ChevronUp size={16} className="text-muted-foreground" />
@@ -100,7 +117,10 @@ export function DayCard({ day, onDataChange }: {
               placeholder="Market context, what you focused on, overall session observations..."
               className="mt-1.5 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none"
             />
-            <div className="flex justify-end mt-1.5">
+            <div className="flex items-center justify-between mt-1.5">
+              {notesError
+                ? <span className="text-xs text-destructive">{notesError}</span>
+                : <span />}
               <button
                 onClick={saveNotes}
                 disabled={savingNotes || notesSaved}
