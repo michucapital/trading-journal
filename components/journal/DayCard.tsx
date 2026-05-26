@@ -4,10 +4,15 @@ import { ChevronDown, ChevronUp, TrendingUp, TrendingDown } from 'lucide-react';
 import { TradeRow } from './TradeRow';
 import type { DayGroup, Trade } from '@/types/journal';
 
-function formatDate(dateStr: string) {
-  // Parse as local date — avoid UTC shift
-  const [year, month, day] = dateStr.split('-').map(Number);
+function formatDate(dateStr: string): string {
+  // dateStr should be YYYY-MM-DD; handle any ISO string by slicing to 10 chars first
+  const clean = String(dateStr ?? '').substring(0, 10);
+  const parts  = clean.split('-').map(Number);
+  if (parts.length !== 3 || parts.some(isNaN)) return clean || 'Unknown date';
+  const [year, month, day] = parts;
+  // Construct as local midnight — avoids any UTC shift
   const d = new Date(year, month - 1, day);
+  if (isNaN(d.getTime())) return clean;
   return d.toLocaleDateString('en-GB', {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
   });
@@ -85,37 +90,39 @@ export function DayCard({ day, onDataChange }: {
         onClick={() => setOpen(o => !o)}
         className="w-full flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-4 hover:bg-muted/40 transition-colors text-left"
       >
-        <span className="font-semibold text-base">{formatDate(day.date)}</span>
+        <span className="font-semibold text-base tracking-tight">{formatDate(day.date)}</span>
         <div className="flex items-center gap-3 ml-auto">
           {winRate != null && (
-            <span className="text-xs text-muted-foreground tabular-nums">{winners}W / {losers}L · {winRate}%</span>
+            <span className="text-xs text-muted-foreground tabular-nums">{winners}W / {losers}L · {winRate}%</span>
           )}
-          <span className="text-xs text-muted-foreground tabular-nums">{day.trades.length} trade{day.trades.length !== 1 ? 's' : ''}</span>
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {day.trades.length} trade{day.trades.length !== 1 ? 's' : ''}
+          </span>
           <span className={`font-mono font-semibold text-sm tabular-nums ${pnlColor}`}>
             {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}
           </span>
           {totalPnl > 0
-            ? <TrendingUp size={16} className="text-emerald-400" />
+            ? <TrendingUp size={15} className="text-emerald-400" />
             : totalPnl < 0
-            ? <TrendingDown size={16} className="text-red-400" />
+            ? <TrendingDown size={15} className="text-red-400" />
             : null}
           {open
-            ? <ChevronUp size={16} className="text-muted-foreground" />
-            : <ChevronDown size={16} className="text-muted-foreground" />}
+            ? <ChevronUp size={15} className="text-muted-foreground" />
+            : <ChevronDown size={15} className="text-muted-foreground" />}
         </div>
       </button>
 
       {open && (
         <div className="border-t border-border">
-          <div className="px-5 py-4 bg-muted/20 border-b border-border">
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Session Notes</label>
+          <div className="px-5 py-4 bg-muted/10 border-b border-border">
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-widest">Session Notes</label>
             <textarea
               value={notes}
               onChange={e => { setNotes(e.target.value); setNotesSaved(false); }}
               onBlur={saveNotes}
               rows={2}
               placeholder="Market context, what you focused on, overall session observations..."
-              className="mt-1.5 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none"
+              className="mt-2 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none placeholder:text-muted-foreground/50"
             />
             <div className="flex items-center justify-between mt-1.5">
               {notesError
@@ -124,7 +131,7 @@ export function DayCard({ day, onDataChange }: {
               <button
                 onClick={saveNotes}
                 disabled={savingNotes || notesSaved}
-                className="text-xs px-2.5 py-1 rounded bg-primary text-primary-foreground disabled:opacity-40 hover:bg-primary/90 transition-colors"
+                className="text-xs px-2.5 py-1 rounded-md bg-primary text-primary-foreground disabled:opacity-40 hover:bg-primary/90 transition-colors"
               >
                 {savingNotes ? 'Saving…' : notesSaved ? 'Saved' : 'Save notes'}
               </button>
