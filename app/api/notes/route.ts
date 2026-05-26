@@ -1,18 +1,6 @@
 import { NextResponse } from 'next/server';
 import { neon } from '@neondatabase/serverless';
 
-async function ensureTable(sql: ReturnType<typeof neon>) {
-  await sql`
-    CREATE TABLE IF NOT EXISTS session_notes (
-      id         SERIAL PRIMARY KEY,
-      date       DATE        UNIQUE NOT NULL,
-      notes      TEXT,
-      created_at TIMESTAMPTZ DEFAULT NOW(),
-      updated_at TIMESTAMPTZ DEFAULT NOW()
-    )
-  `;
-}
-
 export async function POST(request: Request) {
   if (!process.env.POSTGRES_URL) {
     return NextResponse.json({ error: 'Missing POSTGRES_URL' }, { status: 500 });
@@ -34,7 +22,15 @@ export async function POST(request: Request) {
   const sql = neon(process.env.POSTGRES_URL);
 
   try {
-    await ensureTable(sql);
+    await sql`
+      CREATE TABLE IF NOT EXISTS session_notes (
+        id         SERIAL PRIMARY KEY,
+        date       DATE        UNIQUE NOT NULL,
+        notes      TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `;
 
     await sql`
       INSERT INTO session_notes (date, notes, updated_at)
